@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configurador Paramétrico: Laminadora PET</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #f8fafc; margin: 0; overflow: hidden; }
+        
+        /* Layout Principal */
+        #app-container { display: flex; height: 100vh; width: 100vw; }
+        #canvas-container { flex: 1; position: relative; background: radial-gradient(circle at center, #1e293b 0%, #020617 100%); display: flex; align-items: center; justify-content: center; overflow: hidden;}
+        #ui-container { width: 400px; background: #1e293b; border-left: 1px solid #334155; display: flex; flex-direction: column; z-index: 10; box-shadow: -5px 0 25px rgba(0,0,0,0.5);}
+        
+        canvas { display: block; }
+        
+        /* UI Elements */
+        .header { padding: 1.5rem; background: #0f172a; border-bottom: 1px solid #334155; }
+        .step-content { flex: 1; padding: 1.5rem; overflow-y: auto; }
+        .footer { padding: 1.5rem; background: #0f172a; border-top: 1px solid #334155; display: flex; justify-content: space-between; }
+        
+        .card-option { 
+            background: #334155; border: 2px solid transparent; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; 
+            cursor: pointer; transition: all 0.2s ease; display: flex; align-items: center; gap: 1rem;
+        }
+        .card-option:hover { background: #475569; transform: translateY(-2px); }
+        .card-option.selected { border-color: #38bdf8; background: rgba(56, 189, 248, 0.1); }
+        
+        .btn { padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.2s; border: none; }
+        .btn-primary { background: #0ea5e9; color: white; }
+        .btn-primary:hover { background: #0284c7; }
+        .btn-primary:disabled { background: #475569; color: #94a3b8; cursor: not-allowed; }
+        .btn-secondary { background: transparent; color: #cbd5e1; border: 1px solid #475569; }
+        .btn-secondary:hover { background: #334155; }
+        
+        /* Modal de Resultado */
+        #result-modal {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8);
+            display: flex; align-items: center; justify-content: center; z-index: 50; backdrop-filter: blur(5px);
+            opacity: 0; pointer-events: none; transition: opacity 0.3s;
+        }
+        #result-modal.active { opacity: 1; pointer-events: auto; }
+        .modal-box { background: #1e293b; padding: 2.5rem; border-radius: 12px; max-width: 500px; text-align: center; border: 1px solid #334155; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); transform: translateY(20px); transition: transform 0.3s; }
+        #result-modal.active .modal-box { transform: translateY(0); }
+        
+        /* Retícula de fondo para el Canvas */
+        .grid-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;
+            background-image: linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+            background-size: 50px 50px;
+        }
+
+        .hud { position: absolute; top: 20px; left: 20px; color: #38bdf8; font-family: monospace; font-size: 14px; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+<div id="app-container">
+    <!-- Visualizador 2D -->
+    <div id="canvas-container">
+        <div class="grid-overlay"></div>
+        <div class="hud" id="hud-text">CAM: WIDE | FOCUS: NONE</div>
+        <canvas id="viewCanvas"></canvas>
+    </div>
+    
+    <!-- Panel de Configuración Lateral -->
+    <div id="ui-container">
+        <div class="header">
+            <h1 class="text-xl font-bold text-white">Ingeniería Paramétrica</h1>
+            <p class="text-sm text-slate-400" id="step-indicator">Paso 1 de 4: Rodillos</p>
+        </div>
+        
+        <div class="step-content" id="step-panel">
+            <!-- El contenido de los pasos se inyecta con JS -->
+        </div>
+        
+        <div class="footer">
+            <button class="btn btn-secondary" id="btn-prev" style="visibility: hidden;">Atrás</button>
+            <button class="btn btn-primary" id="btn-next" disabled>Siguiente</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal de Resultados de Simulación -->
+<div id="result-modal">
+    <div class="modal-box">
+        <i id="result-icon" class="fa-solid fa-check-circle text-6xl mb-4 text-emerald-400"></i>
+        <h2 id="result-title" class="text-2xl font-bold mb-2">Simulación Exitosa</h2>
+        <p id="result-msg" class="text-slate-300 mb-6">El diseño soportó las cargas de operación sin problemas.</p>
+        <button class="btn btn-primary w-full" onclick="resetConfig()">Rediseñar Máquina</button>
+    </div>
+</div>
+
+<script>
+    // Estado del Sistema
+    const state = {
+        step: 1,
+        selections: {
+            roller: null,   // 4, 6, 8 (pulgadas)
+            shaft: null,    // 20, 25, 35, 50 (mm)
+            shaftMat: '1045', // Default
+            bearing: null,  // 'light', 'heavy'
+            motor: null,    // 0.5, 2.0, 5.0 (HP)
+            gearMat: '4140' // Default
+        },
+        // Variables para la animación de la cámara y simulación
+        camZoom: 1,
+        camTargetZoom: 1,
+        camPanX: 0,
+        camTargetPanX: 0,
+        camPanY: 0,
+        camTargetPanY: 0,
+        animTime: 0,
+        simulating: false,
+        failType: null // 'stall', 'break', 'slip', null
+    };
+
+    // Bases de Datos de Catálogo
+    const catalog = {
+        step1: [
+            { id: 4, title: 'Rodillo 4" (101.6mm)', desc: 'Pequeño, económico. Ángulo de ataque agudo.', icon: 'fa-circle-notch' },
+            { id: 6, title: 'Rodillo 6" (152.4mm)', desc: 'Estándar industrial. Buen agarre de PET.', icon: 'fa-circle' },
+            { id: 8, title: 'Rodillo 8" (203.2mm)', desc: 'Masivo. Excelente agarre, pero muy pesado.', icon: 'fa-compact-disc' }
+        ],
+        step2_shaft: [
+            { id: 20, title: 'Flecha Ø20 mm', desc: 'Ligera. Cargas menores.', icon: 'fa-minus' },
+            { id: 25, title: 'Flecha Ø25 mm', desc: 'Estándar. Equilibrio ideal.', icon: 'fa-minus' },
+            { id: 35, title: 'Flecha Ø35 mm', desc: 'Robusta. Cargas pesadas.', icon: 'fa-equals' },
+            { id: 50, title: 'Flecha Ø50 mm', desc: 'Sobredimensionada. Extrema.', icon: 'fa-bars' }
+        ],
+        step2_mat: [
+            { id: '1018', title: 'Acero Dulce (1018)', desc: 'Económico, baja resistencia a la fatiga.' },
+            { id: '1045', title: 'Acero Estándar (1045)', desc: 'Resistente. El rey de las flechas.' },
+            { id: '4140', title: 'Acero Aleado (4140)', desc: 'Máxima resistencia a cortante y torsión.' }
+        ],
+        step3: [
+            { id: 'light', title: 'Chumacera Ligera (UCP 200)', desc: 'Para cargas radiales bajas. Carcasa compacta.', icon: 'fa-ring' },
+            { id: 'heavy', title: 'Chumacera Pesada (UCP 300)', desc: 'Rodillos robustos. Soporta impactos severos.', icon: 'fa-life-ring' }
+        ],
+        step4_motor: [
+            { id: 0.5, title: 'Motor 0.5 HP', desc: 'Fuerza básica. Riesgo de atasco.', icon: 'fa-plug' },
+            { id: 2.0, title: 'Motor 2.0 HP', desc: 'Potencia industrial. Par constante.', icon: 'fa-car-battery' },
+            { id: 5.0, title: 'Motor 5.0 HP', desc: 'Fuerza bruta. Puede destruir transmisiones.', icon: 'fa-charging-station' }
+        ],
+        step4_gear: [
+            { id: '1020', title: 'Engranes Acero Dulce', desc: 'Baratos. Los dientes se fracturan bajo impacto.' },
+            { id: '4140', title: 'Engranes Acero Templado', desc: 'Tratamiento térmico. Dientes irrompibles.' }
+        ]
+    };
+
+    // Referencias DOM
+    const panel = document.getElementById('step-panel');
+    const btnNext = document.getElementById('btn-next');
+    const btnPrev = document.getElementById('btn-prev');
+    const stepInd = document.getElementById('step-indicator');
+    const hud = document.getElementById('hud-text');
+    const canvas = document.getElementById('viewCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Resize Canvas
+    function resize() {
+        canvas.width = canvas.parentElement.clientWidth;
+        canvas.height = canvas.parentElement.clientHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function renderStep() {
+        panel.innerHTML = '';
+        btnPrev.style.visibility = state.step > 1 ? 'visible' : 'hidden';
+        btnNext.disabled = true; // Deshabilitar hasta que seleccione
+        
+        if (state.step === 1) {
+            stepInd.innerText = "Paso 1 de 4: Rodillo Principal";
+            btnNext.innerText = "Siguiente";
+            hud.innerText = "CAM: MACRO | FOCUS: EXTERIOR RODILLO";
+            
+            panel.innerHTML = `<h3 class="mb-4 text-sky-400 font-semibold">Selecciona el Diámetro de Agarre</h3>`;
+            catalog.step1.forEach(opt => {
+                const isSelected = state.selections.roller === opt.id;
+                if (isSelected) btnNext.disabled = false;
+                
+                panel.innerHTML += `
+                    <div class="card-option ${isSelected ? 'selected' : ''}" onclick="selectOption('roller', ${opt.id})">
+                        <i class="fa-solid ${opt.icon} text-2xl w-8 text-center text-slate-400"></i>
+                        <div>
+                            <div class="font-bold text-white">${opt.title}</div>
+                            <div class="text-xs text-slate-400">${opt.desc}</div>
+                        </div>
+                    </div>
+                `;
+            });
+            // Movimiento de cámara: Enfocar el rodillo
+            setCamera(1.5, 0, 0); 
+            
+        } else if (state.step === 2) {
+            stepInd.innerText = "Paso 2 de 4: Flecha y Material";
+            hud.innerText = "CAM: ZOOM IN | FOCUS: CENTRO Y CUÑERO";
+            
+            panel.innerHTML = `<h3 class="mb-4 text-sky-400 font-semibold">1. Diámetro del Eje</h3>`;
+            catalog.step2_shaft.forEach(opt => {
+                const isSelected = state.selections.shaft === opt.id;
+                panel.innerHTML += `
+                    <div class="card-option ${isSelected ? 'selected' : ''}" onclick="selectOption('shaft', ${opt.id}, true)">
+                        <div>
+                            <div class="font-bold text-white">${opt.title}</div>
+                            <div class="text-xs text-slate-400">${opt.desc}</div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            panel.innerHTML += `<h3 class="mt-6 mb-4 text-sky-400 font-semibold">2. Aleación del Acero</h3>`;
+            catalog.step2_mat.forEach(opt => {
+                const isSelected = state.selections.shaftMat === opt.id;
+                panel.innerHTML += `
+                    <div class="card-option py-2 ${isSelected ? 'selected' : ''}" onclick="selectOption('shaftMat', '${opt.id}', true)">
+                        <div class="text-sm font-bold text-white">${opt.title}</div>
+                    </div>
+                `;
+            });
+            
+            if (state.selections.shaft && state.selections.shaftMat) btnNext.disabled = false;
+            
+            // Movimiento de cámara: Zoom masivo al centro
+            setCamera(3.5, 0, 0);
+
+        } else if (state.step === 3) {
+            stepInd.innerText = "Paso 3 de 4: Apoyos (Rodamientos)";
+            hud.innerText = "CAM: PAN RIGHT | FOCUS: EXTREMO DEL EJE";
+            
+            panel.innerHTML = `
+                <div class="p-3 bg-sky-900/50 border border-sky-700 rounded-lg mb-4 text-sm">
+                    <i class="fa-solid fa-circle-info text-sky-400 mr-2"></i>
+                    Buscando chumaceras con diámetro interior de <strong>${state.selections.shaft} mm</strong>...
+                </div>
+                <h3 class="mb-4 text-sky-400 font-semibold">Selecciona Serie de Carga</h3>
+            `;
+            catalog.step3.forEach(opt => {
+                const isSelected = state.selections.bearing === opt.id;
+                if (isSelected) btnNext.disabled = false;
+                
+                panel.innerHTML += `
+                    <div class="card-option ${isSelected ? 'selected' : ''}" onclick="selectOption('bearing', '${opt.id}')">
+                        <i class="fa-solid ${opt.icon} text-2xl w-8 text-center text-slate-400"></i>
+                        <div>
+                            <div class="font-bold text-white">${opt.title}</div>
+                            <div class="text-xs text-slate-400">${opt.desc}</div>
+                        </div>
+                    </div>
+                `;
+            });
+            // Movimiento de cámara: Paneo para ver cómo abraza la flecha
+            setCamera(2.0, -100, 0);
+
+        } else if (state.step === 4) {
+            stepInd.innerText = "Paso 4 de 4: Transmisión";
+            btnNext.innerText = "Simular Diseño";
+            hud.innerText = "CAM: WIDE | FOCUS: TREN CINEMÁTICO";
+            
+            panel.innerHTML = `<h3 class="mb-4 text-sky-400 font-semibold">1. Potencia del Motor</h3>`;
+            catalog.step4_motor.forEach(opt => {
+                const isSelected = state.selections.motor === opt.id;
+                panel.innerHTML += `
+                    <div class="card-option py-2 ${isSelected ? 'selected' : ''}" onclick="selectOption('motor', ${opt.id}, true)">
+                        <div class="text-sm font-bold text-white">${opt.title}</div>
+                    </div>
+                `;
+            });
+
+            panel.innerHTML += `<h3 class="mt-6 mb-4 text-sky-400 font-semibold">2. Material de Engranes</h3>`;
+            catalog.step4_gear.forEach(opt => {
+                const isSelected = state.selections.gearMat === opt.id;
+                panel.innerHTML += `
+                    <div class="card-option py-2 ${isSelected ? 'selected' : ''}" onclick="selectOption('gearMat', '${opt.id}', true)">
+                        <div class="text-sm font-bold text-white">${opt.title}</div>
+                    </div>
+                `;
+            });
+            
+            if (state.selections.motor && state.selections.gearMat) btnNext.disabled = false;
+            
+            // Movimiento de cámara: Alejar para ver motor y rodillos
+            setCamera(0.8, 150, 0);
+        }
+    }
+
+    function selectOption(key, value, checkBoth = false) {
+        state.selections[key] = value;
+        renderStep(); // Re-render para mostrar selección
+    }
+
+    function setCamera(zoom, px, py) {
+        state.camTargetZoom = zoom;
+        state.camTargetPanX = px;
+        state.camTargetPanY = py;
+    }
+
+    // Navegación
+    btnNext.addEventListener('click', () => {
+        if (state.step < 4) {
+            state.step++;
+            renderStep();
+        } else {
+            runSimulation();
+        }
+    });
+
+    btnPrev.addEventListener('click', () => {
+        if (state.step > 1) {
+            state.step--;
+            renderStep();
+        }
+    });
+
+    function evaluateDesign() {
+        const r = state.selections.roller;
+        const s = state.selections.shaft;
+        const sM = state.selections.shaftMat;
+        const b = state.selections.bearing;
+        const m = state.selections.motor;
+        const gM = state.selections.gearMat;
+
+        // 1. Fallas por Geometría (Deslizamiento)
+        if (r === 4) return { ok: false, type: 'slip', msg: "Falla Cinemática: El diámetro del rodillo (4\") es muy pequeño. El ángulo de ataque no logra atrapar la botella PET y esta rebota." };
+        
+        // Torque requerido basado en el brazo de palanca (radio del rodillo)
+        const reqTorque = r === 8 ? 100 : (r === 6 ? 60 : 30);
+        const motorTorque = m === 5.0 ? 150 : (m === 2.0 ? 70 : 25);
+        
+        // 2. Falla por Motor Estancado
+        if (motorTorque < reqTorque) return { ok: false, type: 'stall', msg: `Falla de Potencia: El motor de ${m} HP no tiene torque suficiente para mover los rodillos de ${r}" al morder el plástico. El sistema se estancó.` };
+
+        // Resistencia del eje a la torsión
+        let shaftStr = (s === 50 ? 200 : (s === 35 ? 120 : (s === 25 ? 60 : 20)));
+        shaftStr *= (sM === '4140' ? 1.5 : (sM === '1045' ? 1.0 : 0.6));
+
+        // 3. Falla por Corte/Torsión en la Flecha o Cuña
+        if (motorTorque > shaftStr * 1.2) return { ok: false, type: 'break', msg: `Falla Catastrófica: El exceso de torque del motor (5 HP) degolló la flecha de ${s}mm (${sM}) en la zona del cuñero.` };
+
+        // 4. Falla en Transmisión
+        if (m === 5.0 && gM === '1020') return { ok: false, type: 'break', msg: "Falla de Transmisión: Los dientes de acero dulce (1020) se fracturaron al recibir el impacto de torque del motor de 5 HP." };
+
+        // 5. Falla en Apoyos
+        if (r === 8 && b === 'light') return { ok: false, type: 'stall', msg: "Falla de Apoyos (Fatiga): La serie ligera de chumaceras no soportó la inmensa carga radial del rodillo de 8 pulgadas. Rodamientos colapsados." };
+
+        return { ok: true, type: 'success', msg: "¡Diseño Estructuralmente Óptimo! Relación perfecta entre torque, resistencia y tamaño. El simulador indica operación segura." };
+    }
+
+    function runSimulation() {
+        const result = evaluateDesign();
+        state.failType = result.ok ? null : result.type;
+        state.simulating = true;
+        
+        // Centrar y alejar cámara para la animación
+        setCamera(1, 0, 0);
+        hud.innerText = "SIMULACIÓN EN PROGRESO...";
+        
+        // Mostrar modal tras unos segundos de animación
+        setTimeout(() => {
+            showResultModal(result.ok, result.msg);
+            state.simulating = false;
+        }, 3000);
+    }
+
+    function showResultModal(isSuccess, msg) {
+        const modal = document.getElementById('result-modal');
+        const icon = document.getElementById('result-icon');
+        const title = document.getElementById('result-title');
+        const msgEl = document.getElementById('result-msg');
+        
+        modal.classList.add('active');
+        msgEl.innerText = msg;
+        
+        if (isSuccess) {
+            icon.className = "fa-solid fa-check-circle text-6xl mb-4 text-emerald-400";
+            title.innerText = "Simulación Exitosa";
+            title.className = "text-2xl font-bold mb-2 text-emerald-400";
+        } else {
+            icon.className = "fa-solid fa-triangle-exclamation text-6xl mb-4 text-rose-500";
+            title.innerText = "Falla de Diseño Crítica";
+            title.className = "text-2xl font-bold mb-2 text-rose-500";
+        }
+    }
+
+    function resetConfig() {
+        document.getElementById('result-modal').classList.remove('active');
+        state.step = 1;
+        state.failType = null;
+        state.selections = { roller: null, shaft: null, shaftMat: '1045', bearing: null, motor: null, gearMat: '4140' };
+        renderStep();
+    }
+
+    function draw() {
+        // Interpolar cámara suavemente
+        state.camZoom += (state.camTargetZoom - state.camZoom) * 0.1;
+        state.camPanX += (state.camTargetPanX - state.camPanX) * 0.1;
+        state.camPanY += (state.camTargetPanY - state.camPanY) * 0.1;
+        
+        state.animTime += 0.05;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.save();
+        
+        // Aplicar Cámara
+        ctx.translate(canvas.width/2 + state.camPanX, canvas.height/2 + state.camPanY);
+        ctx.scale(state.camZoom, state.camZoom);
+        
+        const rSize = state.selections.roller ? state.selections.roller * 10 : 60; // Default 6"
+        const sSize = state.selections.shaft ? state.selections.shaft : 25; // Default 25mm
+        
+        let rotation = state.animTime;
+        
+        // Lógica visual de simulación
+        if (state.simulating) {
+            if (state.failType === 'stall') {
+                rotation = Math.sin(state.animTime * 5) * 0.1; // Tiembla y se atora
+            } else if (state.failType === 'slip') {
+                rotation = state.animTime * 2; // Gira rapidísimo pero la botella no avanza
+            } else if (state.failType === 'break') {
+                rotation = 0; // Muerto
+            }
+        } else if (state.step > 0) {
+            rotation = 0; // Estático en diseño
+        }
+
+        // Dibujar Motor y Engranes (si estamos en paso 4 o simulando)
+        if (state.step >= 4 || state.simulating) {
+            ctx.save();
+            ctx.translate(-150, 0);
+            
+            // Engrane
+            ctx.fillStyle = state.selections.gearMat === '4140' ? '#475569' : '#94a3b8';
+            ctx.beginPath();
+            ctx.arc(0, 0, rSize * 0.8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#0f172a';
+            ctx.lineWidth = 4;
+            ctx.stroke();
+            
+            // Dientes (simulados)
+            for(let i=0; i<12; i++) {
+                ctx.save();
+                ctx.rotate(rotation + (i * Math.PI/6));
+                ctx.fillRect(-10, -rSize*0.8 - 10, 20, 20);
+                ctx.restore();
+            }
+
+            // Motor block
+            if (state.selections.motor) {
+                const mSize = state.selections.motor === 5.0 ? 120 : (state.selections.motor === 2.0 ? 80 : 50);
+                ctx.fillStyle = '#0ea5e9';
+                ctx.fillRect(-mSize/2 - 50, -mSize/2, mSize, mSize);
+                ctx.fillStyle = '#0284c7';
+                ctx.fillRect(-mSize/2 - 50, -mSize/2, 20, mSize); // Ventilador
+            }
+            ctx.restore();
+        }
+
+        // Dibujar Rodillo Principal (Centro)
+        ctx.save();
+        ctx.rotate(rotation);
+        
+        // Cuerpo del rodillo
+        const grad = ctx.createRadialGradient(0, 0, rSize*0.1, 0, 0, rSize);
+        grad.addColorStop(0, '#94a3b8');
+        grad.addColorStop(1, '#334155');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(0, 0, rSize, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#0f172a'; ctx.lineWidth = 2; ctx.stroke();
+        
+        // Estrías
+        ctx.fillStyle = '#1e293b';
+        for(let i=0; i<8; i++) {
+            let a = (i * Math.PI) / 4;
+            ctx.beginPath();
+            ctx.arc(Math.cos(a) * (rSize - 10), Math.sin(a) * (rSize - 10), 6, 0, Math.PI*2);
+            ctx.fill();
+        }
+
+        // Dibujar Flecha (Eje)
+        ctx.fillStyle = state.selections.shaftMat === '4140' ? '#64748b' : '#cbd5e1';
+        ctx.beginPath();
+        ctx.arc(0, 0, sSize, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Cuñero (Keyway)
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(-sSize*0.25, -sSize - 2, sSize*0.5, sSize*0.4);
+
+        // Falla visual si se rompe la flecha
+        if (state.simulating && state.failType === 'break') {
+            ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 4;
+            ctx.beginPath(); ctx.moveTo(-sSize, -sSize); ctx.lineTo(sSize, sSize); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(sSize, -sSize); ctx.lineTo(-sSize, sSize); ctx.stroke();
+        }
+        ctx.restore();
+
+        // Dibujar Chumacera (Solo en paso 3 en adelante)
+        if (state.step >= 3 || state.simulating) {
+            ctx.save();
+            const bType = state.selections.bearing;
+            const bWidth = bType === 'heavy' ? sSize * 4 : sSize * 2.5;
+            const bHeight = bType === 'heavy' ? sSize * 2 : sSize * 1.5;
+            
+            ctx.fillStyle = '#0ea5e9'; // Base azul industrial
+            ctx.globalAlpha = 0.8;
+            
+            // Cuerpo Omega de la chumacera
+            ctx.beginPath();
+            ctx.moveTo(-bWidth, bHeight);
+            ctx.lineTo(bWidth, bHeight);
+            ctx.lineTo(bWidth*0.7, 0);
+            ctx.arc(0, 0, sSize + 10, 0, Math.PI, true);
+            ctx.lineTo(-bWidth*0.7, 0);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Tornillos de anclaje
+            ctx.fillStyle = '#0f172a';
+            ctx.beginPath(); ctx.arc(-bWidth*0.8, bHeight*0.5, 5, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(bWidth*0.8, bHeight*0.5, 5, 0, Math.PI*2); ctx.fill();
+            
+            ctx.restore();
+        }
+
+        // Animación de Botella PET entrando por arriba
+        if (state.simulating) {
+            ctx.save();
+            let bottleY = -200 + (state.animTime * 30);
+            if (state.failType === 'slip') bottleY = -rSize - 40 + Math.sin(state.animTime * 10)*10; // Rebota
+            if (state.failType === 'stall' || state.failType === 'break') bottleY = -rSize - 20; // Se atora
+            
+            if (bottleY > 300 && state.failType === null) bottleY = -200; // Loop exitoso
+
+            ctx.fillStyle = 'rgba(186, 230, 253, 0.6)';
+            ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+            
+            // Aplastamiento
+            let width = 60;
+            if (bottleY > -rSize && bottleY < rSize && state.failType === null) width = 10; // Se aplasta
+            
+            ctx.fillRect(-width/2, bottleY, width, 100);
+            ctx.strokeRect(-width/2, bottleY, width, 100);
+            ctx.restore();
+        }
+
+        ctx.restore();
+        requestAnimationFrame(draw);
+    }
+
+    // Iniciar app
+    renderStep();
+    draw();
+</script>
+</body>
+</html>
